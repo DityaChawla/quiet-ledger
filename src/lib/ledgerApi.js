@@ -53,6 +53,12 @@ export async function importTransactions(spaceId, rows) {
   const { error } = await supabase.from("transactions").insert(payload);
   if (error) throw error;
 }
+export async function updateTransaction(id, t) {
+  const { error } = await supabase.from("transactions").update({
+    amount: t.amount, category: t.cat, note: t.note, occurred_on: t.date,
+  }).eq("id", id);
+  if (error) throw error;
+}
 export async function deleteTransaction(id) {
   const { error } = await supabase.from("transactions").delete().eq("id", id);
   if (error) throw error;

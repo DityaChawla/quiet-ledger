@@ -1,7 +1,7 @@
 import { useEffect, useState, useRef, useCallback } from "react";
 import {
   getSpaces, createSpace, updatePlan,
-  getTransactions, addTransaction, importTransactions, deleteTransaction,
+  getTransactions, addTransaction, importTransactions, updateTransaction, deleteTransaction,
   getFixed, upsertFixed, deleteFixed,
   getBudgets, setBudget, clearBudget,
   getMembers, inviteToSpace,
@@ -85,11 +85,22 @@ export function useLedger() {
     return () => { window.removeEventListener("focus", onFocus); document.removeEventListener("visibilitychange", onVis); };
   }, [activeSpace, refetchSpace, refreshInvites]);
 
+  // slow poll while the app is open, as a backstop for a dropped realtime socket
+  useEffect(() => {
+    const t = setInterval(() => {
+      if (document.hidden) return;
+      if (activeSpace && activeSpace !== "all") refetchSpace(activeSpace);
+      refreshInvites();
+    }, 20000);
+    return () => clearInterval(t);
+  }, [activeSpace, refetchSpace, refreshInvites]);
+
   const actions = {
     setActive: (id) => setData((d) => ({ ...d, activeSpace: id })),
     setCur: (c) => { try { localStorage.setItem("ql-cur", c); } catch {} curRef.current = c; setData((d) => ({ ...d, cur: c })); },
     addTransaction: async (sid, e) => { await addTransaction(sid, e); await refetchSpace(sid); },
     importMany: async (sid, rows) => { await importTransactions(sid, rows); await refetchSpace(sid); },
+    editTransaction: async (sid, id, patch) => { await updateTransaction(id, patch); await refetchSpace(sid); },
     removeTransaction: async (sid, id) => { await deleteTransaction(id); await refetchSpace(sid); },
     createSpaceAction: async (name, type) => { const s = await createSpace(name, type); await loadAll(); setData((d) => ({ ...d, activeSpace: s && s.id ? s.id : (d && d.activeSpace) })); },
     invite: async (sid, email) => { await inviteToSpace(sid, email); },

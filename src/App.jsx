@@ -22,18 +22,48 @@ const CATEGORIES = [
   { id: "shopping", label: "Shopping", color: "#9C6B4E" },
   { id: "fun", label: "Entertainment", color: "#7A5A78" },
   { id: "health", label: "Health", color: "#B08A3E" },
+  { id: "subscription", label: "Subscriptions", color: "#3F7F7A" },
   { id: "other", label: "Other", color: "#8A8580" },
 ];
 const CAT = Object.fromEntries(CATEGORIES.map((c) => [c.id, c]));
-const WEIGHTS = { grocery: 0.22, food: 0.18, transport: 0.12, shopping: 0.14, fun: 0.12, health: 0.1, other: 0.12 };
+const WEIGHTS = { grocery: 0.2, food: 0.17, transport: 0.11, shopping: 0.13, fun: 0.11, health: 0.09, subscription: 0.06, other: 0.13 };
 const STORE_KEY = "quiet-ledger-v3";
 const CURRENCIES = { "₹": { code: "INR", locale: "en-IN" }, "$": { code: "USD", locale: "en-US" } };
 const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 
 const now = new Date();
-const iso = (d) => d.toISOString().slice(0, 10);
+// Local calendar date, not UTC. toISOString() would roll back a day for
+// anyone east of UTC (IST is +5:30), so "today" and every range boundary
+// would land on yesterday.
+const iso = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
 const daysInMonth = (y, m) => new Date(y, m + 1, 0).getDate();
 const uid = () => crypto.randomUUID();
+
+// ── date ranges (Home selector) ──────────────────────────────────
+const RANGES = [
+  { id: "month", label: "This month" },
+  { id: "last", label: "Last month" },
+  { id: "3mo", label: "Last 3 mo" },
+  { id: "year", label: "This year" },
+  { id: "all", label: "All" },
+];
+// Half-open [start, end) as YYYY-MM-DD. `months` is how many monthly
+// budget cycles the range covers, so budgets scale to match it.
+function rangeBounds(id, expenses) {
+  const y = now.getFullYear(), m = now.getMonth();
+  if (id === "last") return { start: iso(new Date(y, m - 1, 1)), end: iso(new Date(y, m, 1)), months: 1 };
+  if (id === "3mo") return { start: iso(new Date(y, m - 2, 1)), end: iso(new Date(y, m + 1, 1)), months: 3 };
+  if (id === "year") return { start: iso(new Date(y, 0, 1)), end: iso(new Date(y, m + 1, 1)), months: m + 1 };
+  if (id === "all") {
+    const dates = (expenses || []).map((e) => e.date).filter(Boolean);
+    if (!dates.length) return { start: null, end: null, months: 1 };
+    const first = new Date(dates.reduce((a, b) => (a < b ? a : b)));
+    const months = Math.max(1, (y - first.getFullYear()) * 12 + (m - first.getMonth()) + 1);
+    return { start: null, end: null, months };
+  }
+  return { start: iso(new Date(y, m, 1)), end: iso(new Date(y, m + 1, 1)), months: 1 };
+}
+const inRange = (e, b) => (!b.start || e.date >= b.start) && (!b.end || e.date < b.end);
 
 // ── budget engine ────────────────────────────────────────────────
 function suggest(income, savingsPct, fixed) {
@@ -101,9 +131,10 @@ function defaultData() {
 export default function App() {
   const { ready: loaded, data, setData, actions, invites } = useLedger();
   const [tab, setTab] = useState("home");
-  const [period, setPeriod] = useState("mtd");
+  const [period, setPeriod] = useState("month");
   const [selected, setSelected] = useState(null);
   const [sheet, setSheet] = useState(null);
+  const [editing, setEditing] = useState(null);
   useEffect(() => {
     const id = "ql-fonts";
     if (!document.getElementById(id)) {
@@ -158,19 +189,20 @@ export default function App() {
   const addExpense = (e) => { actions.addTransaction(data.activeSpace, e); setSheet(null); };
   const addMany = (rows) => { actions.importMany(data.activeSpace, rows); setSheet(null); };
   const delExpense = (id) => actions.removeTransaction(data.activeSpace, id);
+  const editExpense = (id, patch) => { actions.editTransaction(data.activeSpace, id, patch); setEditing(null); };
+  const removeEditing = (id) => { delExpense(id); setEditing(null); };
   const addSpace = (name, type) => { actions.createSpaceAction(name, type); setSheet(null); setTab("plan"); };
 
-  // period derived
-  const y = now.getFullYear(), m = now.getMonth();
-  const inPeriod = (e) => { const d = new Date(e.date); return period === "mtd" ? d.getFullYear() === y && d.getMonth() === m : d.getFullYear() === y; };
-  const pe = view.expenses.filter(inPeriod);
-  const byCat = {}; CATEGORIES.forEach((cat) => (byCat[cat.id] = 0)); pe.forEach((e) => (byCat[e.cat] += e.amount));
+  // period derived — driven by the Home date-range selector
+  const bounds = rangeBounds(period, view.expenses);
+  const pe = view.expenses.filter((e) => inRange(e, bounds));
+  const byCat = {}; CATEGORIES.forEach((cat) => (byCat[cat.id] = 0)); pe.forEach((e) => (byCat[e.cat] = (byCat[e.cat] || 0) + e.amount));
   const total = Object.values(byCat).reduce((a, b) => a + b, 0);
-  const monthsElapsed = period === "mtd" ? 1 : m + 1;
+  const monthsElapsed = bounds.months;
   const budgetTotal = Object.values(budgets).reduce((a, b) => a + b, 0) * monthsElapsed;
   const ranked = CATEGORIES.map((cat) => ({ ...cat, spent: byCat[cat.id] })).filter((x) => x.spent > 0).sort((a, b) => b.spent - a.spent);
 
-  const ctx = { data, view, isAll, budgets, period, setPeriod, selected, setSelected, byCat, total, budgetTotal, monthsElapsed, ranked, pe, delExpense, addMany, setActive, setSheet, invite: actions.invite, S };
+  const ctx = { data, view, isAll, budgets, period, setPeriod, bounds, selected, setSelected, byCat, total, budgetTotal, monthsElapsed, ranked, pe, delExpense, setEditing, addMany, setActive, setSheet, invite: actions.invite, S };
 
   return (
     <div style={{ ...sans, background: P.paper, minHeight: 700, display: "flex", justifyContent: "center", color: P.ink }}>
@@ -214,6 +246,7 @@ export default function App() {
           ))}
         </div>
 
+        {editing && <EditSheet tx={editing} onClose={() => setEditing(null)} onSave={editExpense} onDelete={removeEditing} S={S} />}
         {sheet === "add" && <AddSheet onClose={() => setSheet(null)} onAdd={addExpense} space={activeReal} S={S} />}
         {sheet === "import" && <ImportSheet onClose={() => setSheet(null)} onImport={addMany} space={activeReal} S={S} />}
         {sheet === "space" && <CreateSpaceSheet onClose={() => setSheet(null)} onCreate={addSpace} S={S} />}
@@ -245,8 +278,14 @@ function Home({ ctx }) {
 
   return (
     <>
-      <PeriodToggle period={period} setPeriod={(p) => { setPeriod(p); setSelected(null); }} S={S} />
-      {!isAll && <MembersRow space={view} onInvite={ctx.invite} S={S} />}
+      <RangePills period={period} setPeriod={(p) => { setPeriod(p); setSelected(null); }} S={S} />
+      {isAll ? (
+        <div style={{ ...sans, fontSize: 11.5, color: P.inkFaint, marginBottom: 16, lineHeight: 1.5 }}>
+          Combined view of every space. Pick a space above to add or edit expenses.
+        </div>
+      ) : (
+        <MembersRow space={view} onInvite={ctx.invite} S={S} />
+      )}
 
       <div style={{ marginBottom: 8 }}>
         <div style={eyebrow}>{isAll ? "All spaces · total spent" : "Total spent"}</div>
@@ -254,14 +293,14 @@ function Home({ ctx }) {
         <div style={{ ...sans, ...tnum, fontSize: 13, color: remaining >= 0 ? P.inkSoft : P.over, marginTop: 8 }}>
           {remaining >= 0 ? <>{fmt(remaining)} left of {fmt(budgetTotal)} budget</> : <>{fmt(-remaining)} over your {fmt(budgetTotal)} budget</>}
         </div>
-        {savings > 0 && period === "mtd" && <div style={{ ...sans, ...tnum, fontSize: 12, color: P.accent, marginTop: 4 }}>Saving {fmt(savings)}/mo</div>}
+        {savings > 0 && period === "month" && <div style={{ ...sans, ...tnum, fontSize: 12, color: P.accent, marginTop: 4 }}>Saving {fmt(savings)}/mo</div>}
       </div>
 
       <div style={{ margin: "18px 0 26px" }}>
         <div style={{ position: "relative", height: 8, background: P.hairline, borderRadius: 999, overflow: "hidden" }}>
           <div style={{ position: "absolute", inset: 0, width: `${Math.min(100, budgetTotal ? (total / budgetTotal) * 100 : 0)}%`, background: total > budgetTotal ? P.over : P.accent, borderRadius: 999, transition: "width .4s ease" }} />
         </div>
-        {period === "mtd" && budgetTotal > 0 && (
+        {period === "month" && budgetTotal > 0 && (
           <>
             <div style={{ position: "relative", height: 0 }}><div style={{ position: "absolute", top: -13, left: `${paceFrac * 100}%`, width: 1.5, height: 13, background: P.ink, opacity: 0.55, transform: "translateX(-50%)" }} /></div>
             <div style={{ ...sans, fontSize: 11.5, marginTop: 8, color: P.inkSoft }}>
@@ -301,14 +340,15 @@ function Home({ ctx }) {
       <div style={{ background: P.surface, border: `1px solid ${P.hairline}`, borderRadius: 22, overflow: "hidden" }}>
         {recent.length === 0 && <div style={{ ...sans, fontSize: 13, color: P.inkFaint, padding: 20, textAlign: "center" }}>Nothing logged yet.</div>}
         {recent.map((e, i) => (
-          <div key={e.id} className="ql-row" style={{ display: "flex", alignItems: "center", gap: 12, padding: "13px 16px", borderTop: i ? `1px solid ${P.hairline}` : "none" }}>
+          <div key={e.id} className="ql-row" onClick={() => !isAll && ctx.setEditing(e)}
+            style={{ display: "flex", alignItems: "center", gap: 12, padding: "13px 16px", borderTop: i ? `1px solid ${P.hairline}` : "none", cursor: isAll ? "default" : "pointer" }}>
             <span style={{ width: 8, height: 8, borderRadius: 3, background: CAT[e.cat]?.color || P.inkFaint }} />
             <div style={{ flex: 1, minWidth: 0 }}>
               <div style={{ ...sans, fontSize: 13.5, fontWeight: 500, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{e.note || CAT[e.cat]?.label}{e.fixed && <span style={{ fontSize: 10, color: P.inkFaint }}> · fixed</span>}</div>
               <div style={{ ...sans, fontSize: 11, color: P.inkFaint, marginTop: 2 }}>{CAT[e.cat]?.label} · {new Date(e.date).toLocaleDateString(undefined, { month: "short", day: "numeric" })}</div>
             </div>
             <span style={{ ...sans, ...tnum, fontSize: 13.5, fontWeight: 500 }}>{fmt(e.amount)}</span>
-            {!ctx.isAll && <button onClick={() => delExpense(e.id)} aria-label="Delete" style={{ background: "none", border: "none", cursor: "pointer", color: P.inkFaint, fontSize: 15, padding: "2px 4px" }}>×</button>}
+            {!isAll && <span aria-hidden style={{ color: P.inkFaint, fontSize: 15, lineHeight: 1 }}>›</span>}
           </div>
         ))}
       </div>
@@ -485,12 +525,13 @@ function SpacePill({ label, sub, active, onClick, S }) {
     </button>
   );
 }
-function PeriodToggle({ period, setPeriod, S }) {
+function RangePills({ period, setPeriod, S }) {
   const { sans } = S;
   return (
-    <div style={{ display: "inline-flex", background: P.surface, border: `1px solid ${P.hairline}`, borderRadius: 999, padding: 3, marginBottom: 18 }}>
-      {[["mtd", "This month"], ["ytd", "Year to date"]].map(([k, lbl]) => (
-        <button key={k} onClick={() => setPeriod(k)} style={{ ...sans, fontSize: 12.5, fontWeight: 500, padding: "7px 16px", borderRadius: 999, border: "none", cursor: "pointer", background: period === k ? P.ink : "transparent", color: period === k ? "#fff" : P.inkSoft, transition: "all .2s" }}>{lbl}</button>
+    <div className="ql-scroll" style={{ display: "flex", gap: 6, overflowX: "auto", marginBottom: 18, paddingBottom: 2 }}>
+      {RANGES.map((r) => (
+        <button key={r.id} onClick={() => setPeriod(r.id)}
+          style={{ ...sans, flex: "0 0 auto", fontSize: 12.5, fontWeight: 500, padding: "7px 14px", borderRadius: 999, cursor: "pointer", whiteSpace: "nowrap", border: `1px solid ${period === r.id ? P.ink : P.hairline}`, background: period === r.id ? P.ink : P.surface, color: period === r.id ? "#fff" : P.inkSoft, transition: "all .2s" }}>{r.label}</button>
       ))}
     </div>
   );
@@ -589,6 +630,46 @@ function AddSheet({ onClose, onAdd, space, S }) {
   );
 }
 
+// tap a row in Recent → edit amount / category / note / date, or delete it
+function EditSheet({ tx, onClose, onSave, onDelete, S }) {
+  const { serif, sans, eyebrow, cur } = S;
+  const [amount, setAmount] = useState(String(tx.amount ?? ""));
+  const [cat, setCat] = useState(tx.cat || "other");
+  const [note, setNote] = useState(tx.note || "");
+  const [date, setDate] = useState(tx.date || iso(new Date()));
+  const [confirm, setConfirm] = useState(false);
+  const valid = parseFloat(amount) > 0;
+  const submit = () => { if (valid) onSave(tx.id, { amount: parseFloat(amount), cat, note: note.trim(), date }); };
+  const inp = { ...sans, fontSize: 14, width: "100%", boxSizing: "border-box", padding: "10px 12px", border: `1px solid ${P.hairline}`, borderRadius: 12, background: P.surface, color: P.ink };
+  return (
+    <Sheet onClose={onClose} S={S}>
+      <div style={eyebrow}>Edit expense</div>
+      <div style={{ display: "flex", alignItems: "baseline", gap: 6, margin: "14px 0 4px" }}>
+        <span style={{ ...serif, fontSize: 34, color: P.inkSoft }}>{cur}</span>
+        <input autoFocus inputMode="decimal" value={amount} placeholder="0" onChange={(e) => setAmount(e.target.value.replace(/[^0-9.]/g, ""))} onKeyDown={(e) => e.key === "Enter" && submit()} style={{ ...serif, fontSize: 44, fontWeight: 500, border: "none", background: "none", width: "100%", color: P.ink, padding: 0 }} />
+      </div>
+      <div style={{ borderBottom: `1px solid ${P.hairline}`, marginBottom: 20 }} />
+      <div style={{ ...eyebrow, marginBottom: 10 }}>Category</div>
+      <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginBottom: 20 }}>
+        {CATEGORIES.map((c) => <button key={c.id} onClick={() => setCat(c.id)} style={{ ...sans, fontSize: 12.5, fontWeight: 500, padding: "8px 13px", borderRadius: 999, cursor: "pointer", border: `1px solid ${cat === c.id ? c.color : P.hairline}`, background: cat === c.id ? c.color : "transparent", color: cat === c.id ? "#fff" : P.inkSoft, transition: "all .15s" }}>{c.label}</button>)}
+      </div>
+      <div style={{ display: "flex", gap: 12, marginBottom: 22 }}>
+        <div style={{ flex: 1 }}><div style={{ ...eyebrow, marginBottom: 8 }}>Note</div><input value={note} onChange={(e) => setNote(e.target.value)} placeholder="Optional" style={inp} /></div>
+        <div style={{ width: 150 }}><div style={{ ...eyebrow, marginBottom: 8 }}>Date</div><input type="date" value={date} onChange={(e) => setDate(e.target.value)} style={inp} /></div>
+      </div>
+      <button onClick={submit} disabled={!valid} style={{ ...sans, width: "100%", padding: 15, borderRadius: 14, border: "none", fontSize: 15, fontWeight: 600, cursor: valid ? "pointer" : "not-allowed", background: valid ? P.accent : P.hairline, color: valid ? "#fff" : P.inkFaint, transition: "all .2s" }}>Save changes</button>
+      {!confirm ? (
+        <button onClick={() => setConfirm(true)} style={{ ...sans, width: "100%", marginTop: 10, padding: 13, borderRadius: 14, border: `1px solid ${P.hairline}`, background: "none", fontSize: 13.5, fontWeight: 500, color: P.over, cursor: "pointer" }}>Delete this expense</button>
+      ) : (
+        <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
+          <button onClick={() => onDelete(tx.id)} style={{ ...sans, flex: 1, padding: 13, borderRadius: 14, border: "none", background: P.over, color: "#fff", fontSize: 13.5, fontWeight: 600, cursor: "pointer" }}>Yes, delete</button>
+          <button onClick={() => setConfirm(false)} style={{ ...sans, padding: "13px 18px", borderRadius: 14, border: `1px solid ${P.hairline}`, background: "none", color: P.inkSoft, fontSize: 13.5, cursor: "pointer" }}>Cancel</button>
+        </div>
+      )}
+    </Sheet>
+  );
+}
+
 function CreateSpaceSheet({ onClose, onCreate, S }) {
   const { serif, sans, eyebrow } = S;
   const [name, setName] = useState(""); const [type, setType] = useState("family");
@@ -650,19 +731,67 @@ function SettingsSheet({ cur, setCur, space, isAll, onDelete, onSignOut, onClose
 }
 
 // ── statement import (CSV + Excel, Paytm-aware) ──────────────────
+// Owner's own merchant rules. Checked BEFORE the generic rules below, so
+// these always win — that's the point of having them.
+const USER_RULES = [
+  ["subscription", ["automatic", "autopay", "auto pay", "mandate", "recurring"]],
+  ["food", ["swish", "smartq"]],
+  ["transport", ["ardee mall"]],
+  ["other", ["porter"]],
+];
 const CAT_RULES = [
+  // First, so streaming isn't swallowed by "premium" (bills) or "amazon" (shopping).
+  ["subscription", ["netflix", "spotify", "prime video", "hotstar", "disney", "jiocinema", "sonyliv", "zee5", "youtube premium", "subscription", "membership"]],
   ["food", ["swiggy", "zomato", "restaurant", "cafe", "coffee", "starbucks", "mcdonald", "domino", "kfc", "eatery", "dining", "pizza", "bakery", "chai", "biryani", "food", "hotel", "dhaba"]],
   ["grocery", ["bigbasket", "grocery", "dmart", "d-mart", "reliance fresh", "more retail", "spencer", "grofers", "blinkit", "zepto", "instamart", "supermarket", "kirana", "vegetable", "fruit", "milk", "dairy", "mart"]],
   ["transport", ["uber", "ola", "rapido", "fuel", "petrol", "diesel", "irctc", "metro", "fastag", "parking", "cab ", "auto ", "indian oil", "hp petrol", "bharat petroleum", "shell", "railway", "flight", "indigo", "airlines", "redbus"]],
   ["bills", ["rent", "electricity", "water bill", "gas bill", "broadband", "airtel", "jio", "vodafone", "vi ", "act fibernet", "tata power", "bescom", "bill payment", "recharge", "dth", "insurance", "emi", "loan", "premium", "maintenance"]],
   ["shopping", ["amazon", "flipkart", "myntra", "ajio", "meesho", "nykaa", "mall", "lifestyle", "shoppers stop", "decathlon", "ikea", "croma", "reliance digital", "store"]],
-  ["fun", ["netflix", "spotify", "prime video", "hotstar", "disney", "bookmyshow", "pvr", "inox", "cinema", "gaming", "youtube premium", "subscription", "steam"]],
+  ["fun", ["bookmyshow", "pvr", "inox", "cinema", "gaming", "steam", "amusement"]],
   ["health", ["pharmacy", "apollo", "medplus", "hospital", "clinic", "medical", "1mg", "pharmeasy", "diagnostic", "pathology", "lab ", "dentist", "gym", "fitness"]],
 ];
 function guessCat(desc) {
   const d = (desc || "").toLowerCase();
+  for (const [cat, kws] of USER_RULES) if (kws.some((k) => d.includes(k))) return cat;
   for (const [cat, kws] of CAT_RULES) if (kws.some((k) => d.includes(k))) return cat;
   return "other";
+}
+
+// ── self-transfers ───────────────────────────────────────────────
+// Money moved between your own accounts isn't spending. Paytm shows these
+// as payments to your own name, or as wallet/balance top-ups.
+const SELF_KWS = ["added to wallet", "add money", "added money", "money added", "wallet topup", "wallet top-up", "top up", "topup", "self transfer", "sent to self", "added to paytm", "added to fastag"];
+function isSelfTransfer(hay, ownName) {
+  if (SELF_KWS.some((k) => hay.includes(k))) return true;
+  const n = (ownName || "").toLowerCase().trim();
+  if (n.length < 3) return false;
+  if (hay.includes(n)) return true;
+  // also catch "Firstname ... Lastname" split across the description
+  const parts = n.split(/\s+/).filter((p) => p.length > 2);
+  return parts.length > 1 && parts.every((p) => hay.includes(p));
+}
+// Paytm puts the account holder's name on the statement's summary tab.
+function findAccountName(wb) {
+  const LABEL = /^(?:customer |account |user )?(?:name|holder)$/i;
+  for (const sheet of wb.SheetNames) {
+    let aoa;
+    try { aoa = XLSX.utils.sheet_to_json(wb.Sheets[sheet], { header: 1, blankrows: false, raw: false }); } catch { continue; }
+    for (const row of (aoa || []).slice(0, 40)) {
+      if (!row) continue;
+      for (let j = 0; j < row.length; j++) {
+        const cell = String(row[j] == null ? "" : row[j]).trim();
+        const inline = cell.match(/^(?:customer |account |user )?(?:name|holder)\s*[:\-]\s*(.+)$/i);
+        if (inline && inline[1].trim().length > 2) return inline[1].trim();
+        if (LABEL.test(cell)) {
+          for (let k = j + 1; k < row.length; k++) {
+            const v = String(row[k] == null ? "" : row[k]).trim();
+            if (v.length > 2) return v;
+          }
+        }
+      }
+    }
+  }
+  return "";
 }
 function parseAmt(v) { if (v == null) return 0; const n = parseFloat(String(v).replace(/[^0-9.\-]/g, "")); return isNaN(n) ? 0 : n; }
 function parseDateStr(v) {
@@ -694,12 +823,13 @@ function rowsFromAoA(aoa) {
 // parse an Excel workbook, picking the sheet that holds the transaction table
 function parseWorkbook(data) {
   const wb = XLSX.read(data, { type: "array" });
+  const ownName = findAccountName(wb);   // from the summary tab
   const names = wb.SheetNames.slice().sort((a, b) =>
     (/passbook|transaction|history|upi|statement/i.test(b) ? 1 : 0) - (/passbook|transaction|history|upi|statement/i.test(a) ? 1 : 0));
   for (const name of names) {
     const aoa = XLSX.utils.sheet_to_json(wb.Sheets[name], { header: 1, blankrows: false, raw: false });
     const parsed = rowsFromAoA(aoa);
-    if (parsed && parsed.rows.length) return parsed;
+    if (parsed && parsed.rows.length) return { ...parsed, ownName };
   }
   return null;
 }
@@ -716,8 +846,12 @@ function detectCols(fields, sample) {
     amountCol: find(/amount|amt|value/i),
   };
 }
-function buildRows(rows, cols) {
-  return rows.map((r) => {
+// Keep spends ("Money Paid") only: drop credits, drop self-transfers.
+// Returns the kept rows plus what was skipped, so the UI can say so.
+function buildRows(rows, cols, ownName) {
+  const out = [];
+  let credits = 0, self = 0;
+  for (const r of rows) {
     const d1 = String(r[cols.descCol] || "").trim();
     const d2 = cols.descCol2 ? String(r[cols.descCol2] || "").trim() : "";
     const note = (d1 || d2 || "Imported").slice(0, 60);
@@ -736,8 +870,12 @@ function buildRows(rows, cols) {
       isCredit = signPos || (textCredit && !textDebit && !signNeg);
       amount = val;
     }
-    return { date: parseDateStr(r[cols.dateCol]), note, amount, cat: guessCat(hay), include: !isCredit && amount > 0, isCredit };
-  }).filter((x) => !x.isCredit && x.amount > 0);   // keep spends (Money Paid) only
+    if (isCredit) { credits++; continue; }
+    if (!(amount > 0)) continue;
+    if (isSelfTransfer(hay, ownName)) { self++; continue; }
+    out.push({ date: parseDateStr(r[cols.dateCol]), note, amount, cat: guessCat(hay), include: true });
+  }
+  return { rows: out, credits, self };
 }
 
 function ImportSheet({ onClose, onImport, space, S }) {
@@ -745,19 +883,21 @@ function ImportSheet({ onClose, onImport, space, S }) {
   const [rows, setRows] = useState(null);
   const [fileName, setFileName] = useState("");
   const [err, setErr] = useState("");
+  const [skipped, setSkipped] = useState(null);
 
   const onFile = (e) => {
     const file = e.target.files && e.target.files[0];
     if (!file) return;
-    setFileName(file.name); setErr(""); setRows(null);
-    const finish = (fields, data) => {
+    setFileName(file.name); setErr(""); setRows(null); setSkipped(null);
+    const finish = (fields, data, ownName) => {
       try {
         if (!fields.length) return setErr("Couldn't read the columns. Make sure it's the Paytm statement export.");
         const cols = detectCols(fields, data[0] || {});
         if (!cols.dateCol || (!cols.debitCol && !cols.amountCol)) return setErr("Couldn't find date and amount columns in this file.");
-        const built = buildRows(data, cols);
-        if (!built.length) return setErr("No spending rows found. (Money Received / credits are skipped.)");
-        setRows(built.slice(0, 500));
+        const built = buildRows(data, cols, ownName);
+        if (!built.rows.length) return setErr("No spending rows found. (Credits and transfers to yourself are skipped.)");
+        setRows(built.rows.slice(0, 500));
+        setSkipped({ credits: built.credits, self: built.self, name: ownName });
       } catch { setErr("Something went wrong reading that file."); }
     };
     const isExcel = /\.x(lsx|ls)$/i.test(file.name);
@@ -767,7 +907,7 @@ function ImportSheet({ onClose, onImport, space, S }) {
         try {
           const parsed = parseWorkbook(new Uint8Array(reader.result));
           if (!parsed) return setErr("Couldn't find the transaction table in this Excel file.");
-          finish(parsed.fields, parsed.rows);
+          finish(parsed.fields, parsed.rows, parsed.ownName);
         } catch { setErr("Couldn't read that Excel file."); }
       };
       reader.onerror = () => setErr("Couldn't read that file.");
@@ -775,7 +915,7 @@ function ImportSheet({ onClose, onImport, space, S }) {
     } else {
       Papa.parse(file, {
         header: true, skipEmptyLines: true,
-        complete: (res) => finish((res.meta && res.meta.fields) || [], res.data),
+        complete: (res) => finish((res.meta && res.meta.fields) || [], res.data, ""),
         error: () => setErr("Couldn't parse that file."),
       });
     }
@@ -807,8 +947,15 @@ function ImportSheet({ onClose, onImport, space, S }) {
         <>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", margin: "14px 0 12px" }}>
             <div style={{ ...sans, fontSize: 12.5, color: P.inkSoft }}>{selected.length} of {rows.length} selected · <span style={{ ...tnum, color: P.ink, fontWeight: 600 }}>{fmt(sum)}</span></div>
-            <button onClick={() => { setRows(null); setFileName(""); }} style={{ ...sans, fontSize: 12, color: P.inkSoft, background: "none", border: "none", cursor: "pointer" }}>Choose another</button>
+            <button onClick={() => { setRows(null); setFileName(""); setSkipped(null); }} style={{ ...sans, fontSize: 12, color: P.inkSoft, background: "none", border: "none", cursor: "pointer" }}>Choose another</button>
           </div>
+          {skipped && (skipped.credits > 0 || skipped.self > 0) && (
+            <div style={{ ...sans, fontSize: 11.5, color: P.inkFaint, margin: "-4px 0 12px", lineHeight: 1.5 }}>
+              Skipped {skipped.credits > 0 && <>{skipped.credits} credit{skipped.credits === 1 ? "" : "s"}</>}
+              {skipped.credits > 0 && skipped.self > 0 && " and "}
+              {skipped.self > 0 && <>{skipped.self} transfer{skipped.self === 1 ? "" : "s"} to yourself{skipped.name ? ` (${skipped.name})` : ""}</>}.
+            </div>
+          )}
           <div style={{ maxHeight: "44vh", overflowY: "auto", border: `1px solid ${P.hairline}`, borderRadius: 14 }}>
             {rows.map((r, i) => (
               <div key={i} style={{ display: "flex", alignItems: "center", gap: 9, padding: "9px 11px", borderTop: i ? `1px solid ${P.hairline}` : "none", opacity: r.include ? 1 : 0.4 }}>
@@ -836,7 +983,10 @@ function ImportSheet({ onClose, onImport, space, S }) {
 // ── First-space / invite-to-join screen (shown when you have no spaces) ──
 function FirstSpace({ invites, onApprove, onDecline, onCreate, S }) {
   const { serif, sans, eyebrow } = S;
-  const [name, setName] = useState("");
+  // Pre-filled so "Create space" is live on arrival. With an empty box the
+  // button sits disabled and this screen looks like an app with no buttons —
+  // which is exactly how the "no add button / no tabs" report presents.
+  const [name, setName] = useState("Personal");
   const [type, setType] = useState("family");
   const types = [
     { id: "family", title: "Family", desc: "One shared pool. Everyone adds to the same ledger, no debts." },
