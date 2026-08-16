@@ -46,12 +46,23 @@ const RANGES = [
   { id: "3mo", label: "Last 3 mo" },
   { id: "year", label: "This year" },
   { id: "lastyear", label: "Last year" },
-  { id: "all", label: "All" },
+  { id: "all", label: "All time" },
+  { id: "custom", label: "Custom range…" },
 ];
+const parseYmd = (s) => { const [Y, M, D] = String(s).split("-").map(Number); return new Date(Y, (M || 1) - 1, D || 1); };
+const nextDay = (s) => { const d = parseYmd(s); d.setDate(d.getDate() + 1); return iso(d); };
+const monthSpan = (a, b) => Math.max(1, (b.getFullYear() - a.getFullYear()) * 12 + (b.getMonth() - a.getMonth()) + 1);
 // Half-open [start, end) as YYYY-MM-DD. `months` is how many monthly
 // budget cycles the range covers, so budgets scale to match it.
-function rangeBounds(id, expenses) {
+function rangeBounds(id, expenses, custom) {
   const y = now.getFullYear(), m = now.getMonth();
+  if (id === "custom") {
+    let a = (custom && custom.start) || iso(new Date(y, m, 1));
+    let b = (custom && custom.end) || iso(now);
+    if (a > b) [a, b] = [b, a];               // tolerate a backwards range
+    // `end` is exclusive, so push past the chosen last day to include it
+    return { start: a, end: nextDay(b), months: monthSpan(parseYmd(a), parseYmd(b)) };
+  }
   if (id === "last") return { start: iso(new Date(y, m - 1, 1)), end: iso(new Date(y, m, 1)), months: 1 };
   if (id === "3mo") return { start: iso(new Date(y, m - 2, 1)), end: iso(new Date(y, m + 1, 1)), months: 3 };
   if (id === "year") return { start: iso(new Date(y, 0, 1)), end: iso(new Date(y, m + 1, 1)), months: m + 1 };
@@ -134,6 +145,7 @@ export default function App() {
   const { ready: loaded, data, setData, actions, invites, error, reload } = useLedger();
   const [tab, setTab] = useState("home");
   const [period, setPeriod] = useState("month");
+  const [custom, setCustom] = useState(() => ({ start: iso(new Date(now.getFullYear(), now.getMonth(), 1)), end: iso(now) }));
   const [selected, setSelected] = useState(null);
   const [sheet, setSheet] = useState(null);
   const [editing, setEditing] = useState(null);
@@ -212,7 +224,7 @@ export default function App() {
   const addSpace = (name, type) => { actions.createSpaceAction(name, type); setSheet(null); setTab("plan"); };
 
   // period derived — driven by the Home date-range selector
-  const bounds = rangeBounds(period, view.expenses);
+  const bounds = rangeBounds(period, view.expenses, custom);
   const pe = view.expenses.filter((e) => inRange(e, bounds));
   const byCat = {}; CATEGORIES.forEach((cat) => (byCat[cat.id] = 0)); pe.forEach((e) => (byCat[e.cat] = (byCat[e.cat] || 0) + e.amount));
   const total = Object.values(byCat).reduce((a, b) => a + b, 0);
@@ -220,7 +232,7 @@ export default function App() {
   const budgetTotal = Object.values(budgets).reduce((a, b) => a + b, 0) * monthsElapsed;
   const ranked = CATEGORIES.map((cat) => ({ ...cat, spent: byCat[cat.id] })).filter((x) => x.spent > 0).sort((a, b) => b.spent - a.spent);
 
-  const ctx = { data, view, isAll, budgets, period, setPeriod, bounds, selected, setSelected, byCat, total, budgetTotal, monthsElapsed, ranked, pe, delExpense, setEditing, addMany, setActive, setSheet, invite: actions.invite, S };
+  const ctx = { data, view, isAll, budgets, period, setPeriod, custom, setCustom, bounds, selected, setSelected, byCat, total, budgetTotal, monthsElapsed, ranked, pe, delExpense, setEditing, addMany, setActive, setSheet, invite: actions.invite, S };
 
   return (
     <div style={{ ...sans, background: P.paper, minHeight: 700, display: "flex", justifyContent: "center", color: P.ink }}>
@@ -248,10 +260,13 @@ export default function App() {
           {tab === "plan" && <Plan ctx={ctx} patchSpace={patchSpace} />}
         </div>
 
-        {/* floating add */}
+        {/* Floating add. Anchored to the right edge of the 430px column, or to
+            the screen on narrower phones. The old `left:50%` +
+            `translateX(calc(215px - 100%))` put its right edge at 50vw + 215px,
+            which lands off-screen on any viewport under 430px — most Androids. */}
         {!isAll && (
           <button onClick={() => setSheet("add")} aria-label="Add expense"
-            style={{ ...sans, position: "fixed", bottom: 78, left: "50%", transform: "translateX(calc(215px - 100%))", background: P.accent, color: "#fff", border: "none", borderRadius: 999, width: 56, height: 56, fontSize: 26, cursor: "pointer", boxShadow: "0 8px 24px rgba(46,90,71,0.36)", zIndex: 40 }}>+</button>
+            style={{ ...sans, position: "fixed", bottom: 78, right: "max(16px, calc(50% - 199px))", background: P.accent, color: "#fff", border: "none", borderRadius: 999, width: 56, height: 56, fontSize: 26, cursor: "pointer", boxShadow: "0 8px 24px rgba(46,90,71,0.36)", zIndex: 40 }}>+</button>
         )}
 
         {/* bottom tabs */}
@@ -286,7 +301,7 @@ export default function App() {
 
 // ── HOME ─────────────────────────────────────────────────────────
 function Home({ ctx }) {
-  const { view, isAll, budgets, period, setPeriod, selected, setSelected, total, budgetTotal, monthsElapsed, ranked, pe, delExpense, S } = ctx;
+  const { view, isAll, budgets, period, setPeriod, custom, setCustom, bounds, selected, setSelected, total, budgetTotal, monthsElapsed, ranked, pe, delExpense, S } = ctx;
   const { serif, sans, eyebrow, tnum, fmt } = S;
   const remaining = budgetTotal - total;
   const y = now.getFullYear(), m = now.getMonth();
@@ -296,7 +311,7 @@ function Home({ ctx }) {
 
   return (
     <>
-      <RangePills period={period} setPeriod={(p) => { setPeriod(p); setSelected(null); }} S={S} />
+      <RangeSelect period={period} setPeriod={(p) => { setPeriod(p); setSelected(null); }} custom={custom} setCustom={(c) => { setCustom(c); setSelected(null); }} bounds={bounds} S={S} />
       {isAll ? (
         <div style={{ ...sans, fontSize: 11.5, color: P.inkFaint, marginBottom: 16, lineHeight: 1.5 }}>
           Combined view of every space. Pick a space above to add or edit expenses.
@@ -543,14 +558,30 @@ function SpacePill({ label, sub, active, onClick, S }) {
     </button>
   );
 }
-function RangePills({ period, setPeriod, S }) {
-  const { sans } = S;
+// Native <select> so Android/iOS use their own picker, plus two date fields
+// when "Custom range…" is chosen.
+function RangeSelect({ period, setPeriod, custom, setCustom, bounds, S }) {
+  const { sans, tnum } = S;
+  const field = { ...sans, ...tnum, fontSize: 13, padding: "9px 10px", border: `1px solid ${P.hairline}`, borderRadius: 10, background: P.surface, color: P.ink, boxSizing: "border-box", flex: 1, minWidth: 0 };
+  const label = (s) => (s ? parseYmd(s).toLocaleDateString(undefined, { day: "numeric", month: "short", year: "numeric" }) : "");
   return (
-    <div className="ql-scroll" style={{ display: "flex", gap: 6, overflowX: "auto", marginBottom: 18, paddingBottom: 2 }}>
-      {RANGES.map((r) => (
-        <button key={r.id} onClick={() => setPeriod(r.id)}
-          style={{ ...sans, flex: "0 0 auto", fontSize: 12.5, fontWeight: 500, padding: "7px 14px", borderRadius: 999, cursor: "pointer", whiteSpace: "nowrap", border: `1px solid ${period === r.id ? P.ink : P.hairline}`, background: period === r.id ? P.ink : P.surface, color: period === r.id ? "#fff" : P.inkSoft, transition: "all .2s" }}>{r.label}</button>
-      ))}
+    <div style={{ marginBottom: 18 }}>
+      <select value={period} onChange={(e) => setPeriod(e.target.value)} aria-label="Date range"
+        style={{ ...sans, fontSize: 13.5, fontWeight: 500, padding: "9px 34px 9px 14px", borderRadius: 999, border: `1px solid ${P.hairline}`, background: `${P.surface} url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='10' height='6'><path d='M1 1l4 4 4-4' fill='none' stroke='%2377736C' stroke-width='1.6' stroke-linecap='round'/></svg>") no-repeat right 14px center`, color: P.ink, cursor: "pointer", appearance: "none", WebkitAppearance: "none" }}>
+        {RANGES.map((r) => <option key={r.id} value={r.id}>{r.label}</option>)}
+      </select>
+      {period === "custom" && (
+        <div style={{ display: "flex", gap: 8, alignItems: "center", marginTop: 10 }}>
+          <input type="date" value={custom.start} max={custom.end || undefined} onChange={(e) => setCustom({ ...custom, start: e.target.value })} style={field} />
+          <span style={{ ...sans, fontSize: 12, color: P.inkFaint }}>to</span>
+          <input type="date" value={custom.end} min={custom.start || undefined} onChange={(e) => setCustom({ ...custom, end: e.target.value })} style={field} />
+        </div>
+      )}
+      {period !== "month" && bounds && bounds.start && (
+        <div style={{ ...sans, fontSize: 11, color: P.inkFaint, marginTop: 8 }}>
+          {label(bounds.start)} – {label(bounds.end ? (() => { const d = parseYmd(bounds.end); d.setDate(d.getDate() - 1); return iso(d); })() : bounds.end)}
+        </div>
+      )}
     </div>
   );
 }
