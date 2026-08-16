@@ -5,6 +5,7 @@ const anon = import.meta.env.VITE_SUPABASE_ANON_KEY?.trim();
 
 export const supabase = createClient(url, anon);
 
+// keep the realtime socket signed in as the current user
 supabase.auth.getSession().then(({ data }) => {
   supabase.realtime.setAuth(data.session?.access_token ?? null);
 });
