@@ -8,6 +8,11 @@ export default defineConfig({
     VitePWA({
       registerType: "autoUpdate",
       includeAssets: ["icon-192.png", "icon-512.png"],
+      workbox: {
+        clientsClaim: true,
+        skipWaiting: true,
+        cleanupOutdatedCaches: true,
+      },
       manifest: {
         name: "Quiet Ledger",
         short_name: "Ledger",
