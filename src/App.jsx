@@ -45,6 +45,7 @@ const RANGES = [
   { id: "last", label: "Last month" },
   { id: "3mo", label: "Last 3 mo" },
   { id: "year", label: "This year" },
+  { id: "lastyear", label: "Last year" },
   { id: "all", label: "All" },
 ];
 // Half-open [start, end) as YYYY-MM-DD. `months` is how many monthly
@@ -54,6 +55,7 @@ function rangeBounds(id, expenses) {
   if (id === "last") return { start: iso(new Date(y, m - 1, 1)), end: iso(new Date(y, m, 1)), months: 1 };
   if (id === "3mo") return { start: iso(new Date(y, m - 2, 1)), end: iso(new Date(y, m + 1, 1)), months: 3 };
   if (id === "year") return { start: iso(new Date(y, 0, 1)), end: iso(new Date(y, m + 1, 1)), months: m + 1 };
+  if (id === "lastyear") return { start: iso(new Date(y - 1, 0, 1)), end: iso(new Date(y, 0, 1)), months: 12 };
   if (id === "all") {
     const dates = (expenses || []).map((e) => e.date).filter(Boolean);
     if (!dates.length) return { start: null, end: null, months: 1 };
@@ -129,7 +131,7 @@ function defaultData() {
 }
 
 export default function App() {
-  const { ready: loaded, data, setData, actions, invites } = useLedger();
+  const { ready: loaded, data, setData, actions, invites, error, reload } = useLedger();
   const [tab, setTab] = useState("home");
   const [period, setPeriod] = useState("month");
   const [selected, setSelected] = useState(null);
@@ -154,6 +156,22 @@ export default function App() {
   const eyebrow = { ...sans, fontSize: 10.5, fontWeight: 600, letterSpacing: "0.14em", textTransform: "uppercase", color: P.inkFaint };
   const tnum = { fontVariantNumeric: "tabular-nums" };
   const S = { serif, sans, eyebrow, tnum, fmt, fmtK, cur };
+
+  // Loading failed and we have nothing to show — say so instead of spinning
+  // forever on a screen with no tabs and no add button.
+  if (loaded && error && !data)
+    return (
+      <div style={{ ...sans, minHeight: 520, background: P.paper, display: "flex", alignItems: "center", justifyContent: "center", padding: 24, color: P.ink }}>
+        <div style={{ maxWidth: 340, textAlign: "center" }}>
+          <div style={{ ...serif, fontSize: 22, fontWeight: 500, marginBottom: 8 }}>Couldn't open your ledger</div>
+          <div style={{ fontSize: 13, color: P.inkSoft, lineHeight: 1.5, marginBottom: 18 }}>{error}</div>
+          <div style={{ display: "flex", gap: 8, justifyContent: "center" }}>
+            <button onClick={() => reload()} style={{ ...sans, fontSize: 14, fontWeight: 600, color: "#fff", background: P.accent, border: "none", borderRadius: 12, padding: "12px 22px", cursor: "pointer" }}>Try again</button>
+            <button onClick={signOut} style={{ ...sans, fontSize: 14, color: P.inkSoft, background: "none", border: `1px solid ${P.hairline}`, borderRadius: 12, padding: "12px 18px", cursor: "pointer" }}>Sign out</button>
+          </div>
+        </div>
+      </div>
+    );
 
   if (!loaded || !data)
     return <div style={{ ...sans, minHeight: 520, background: P.paper, display: "flex", alignItems: "center", justifyContent: "center", color: P.inkFaint, fontSize: 13, letterSpacing: "0.1em", textTransform: "uppercase" }}>Opening ledger…</div>;
@@ -348,7 +366,7 @@ function Home({ ctx }) {
               <div style={{ ...sans, fontSize: 11, color: P.inkFaint, marginTop: 2 }}>{CAT[e.cat]?.label} · {new Date(e.date).toLocaleDateString(undefined, { month: "short", day: "numeric" })}</div>
             </div>
             <span style={{ ...sans, ...tnum, fontSize: 13.5, fontWeight: 500 }}>{fmt(e.amount)}</span>
-            {!isAll && <span aria-hidden style={{ color: P.inkFaint, fontSize: 15, lineHeight: 1 }}>›</span>}
+            {!isAll && <button onClick={(ev) => { ev.stopPropagation(); delExpense(e.id); }} aria-label="Delete" style={{ background: "none", border: "none", cursor: "pointer", color: P.inkFaint, fontSize: 15, padding: "2px 4px" }}>×</button>}
           </div>
         ))}
       </div>

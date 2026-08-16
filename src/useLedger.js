@@ -17,6 +17,7 @@ export function useLedger() {
   const [ready, setReady] = useState(false);
   const [data, setData] = useState(null);
   const [invites, setInvites] = useState([]);
+  const [error, setError] = useState(null);
   const loadedOnce = useRef(false);   // React StrictMode double-invokes effects; run once
   const curRef = useRef((typeof localStorage !== "undefined" && localStorage.getItem("ql-cur")) || "\u20B9");
 
@@ -38,16 +39,25 @@ export function useLedger() {
     try { setInvites(await myInvites()); } catch { setInvites([]); }
   }, []);
 
+  // Never leave the app on the spinner. If this throws and `ready` is never
+  // set, the user is stuck on "Opening ledger…" — a screen with no tabs and
+  // no add button — with nothing on screen saying why.
   const loadAll = useCallback(async () => {
-    const spaces = await getSpaces();               // no auto-create
-    const built = await Promise.all(spaces.map(loadSpace));
-    setData((d) => ({
-      activeSpace: (d && d.activeSpace && built.some((b) => b.id === d.activeSpace)) ? d.activeSpace : (built[0] && built[0].id) || null,
-      cur: curRef.current,
-      spaces: built,
-    }));
-    await refreshInvites();
-    setReady(true);
+    try {
+      setError(null);
+      const spaces = await getSpaces();             // no auto-create
+      const built = await Promise.all(spaces.map(loadSpace));
+      setData((d) => ({
+        activeSpace: (d && d.activeSpace && built.some((b) => b.id === d.activeSpace)) ? d.activeSpace : (built[0] && built[0].id) || null,
+        cur: curRef.current,
+        spaces: built,
+      }));
+      await refreshInvites();
+    } catch (e) {
+      setError((e && (e.message || e.error_description)) || "Couldn't reach the ledger.");
+    } finally {
+      setReady(true);
+    }
   }, [refreshInvites]);
 
   useEffect(() => {
@@ -126,5 +136,5 @@ export function useLedger() {
     },
   };
 
-  return { ready, data, setData, invites, actions };
+  return { ready, data, setData, invites, actions, error, reload: loadAll };
 }
