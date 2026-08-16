@@ -25,6 +25,13 @@ export async function createSpace(name, type) {
   if (error) throw error;
   return data;
 }
+// Owner: deletes the space and cascades. Member: just removes you.
+// Param name must match delete-space.sql (p_space, matching create_space's
+// p_name / accept_invite's p_invite convention).
+export async function leaveOrDeleteSpace(spaceId) {
+  const { error } = await supabase.rpc("leave_or_delete_space", { p_space: spaceId });
+  if (error) throw error;
+}
 export async function updatePlan(spaceId, { income, savings_pct }) {
   const { error } = await supabase.from("spaces").update({ income, savings_pct }).eq("id", spaceId);
   if (error) throw error;

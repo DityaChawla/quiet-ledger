@@ -1,6 +1,6 @@
 import { useEffect, useState, useRef, useCallback } from "react";
 import {
-  getSpaces, createSpace, updatePlan,
+  getSpaces, createSpace, updatePlan, leaveOrDeleteSpace,
   getTransactions, addTransaction, importTransactions, updateTransaction, deleteTransaction,
   getFixed, upsertFixed, deleteFixed,
   getBudgets, setBudget, clearBudget,
@@ -103,6 +103,8 @@ export function useLedger() {
     editTransaction: async (sid, id, patch) => { await updateTransaction(id, patch); await refetchSpace(sid); },
     removeTransaction: async (sid, id) => { await deleteTransaction(id); await refetchSpace(sid); },
     createSpaceAction: async (name, type) => { const s = await createSpace(name, type); await loadAll(); setData((d) => ({ ...d, activeSpace: s && s.id ? s.id : (d && d.activeSpace) })); },
+    // loadAll re-points activeSpace at a surviving space (or null) on its own
+    deleteSpace: async (sid) => { await leaveOrDeleteSpace(sid); await loadAll(); },
     invite: async (sid, email) => { await inviteToSpace(sid, email); },
     approveInvite: async (id) => { const sid = await approveInvite(id); await loadAll(); if (sid) setData((d) => ({ ...d, activeSpace: sid })); },
     declineInvite: async (id) => { await declineInvite(id); await refreshInvites(); },
