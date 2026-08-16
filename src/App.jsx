@@ -98,7 +98,7 @@ function defaultData() {
 }
 
 export default function App() {
-  const { ready: loaded, data, setData, actions } = useLedger();
+  const { ready: loaded, data, setData, actions, invites } = useLedger();
   const [tab, setTab] = useState("home");
   const [period, setPeriod] = useState("mtd");
   const [selected, setSelected] = useState(null);
@@ -125,6 +125,10 @@ export default function App() {
 
   if (!loaded || !data)
     return <div style={{ ...sans, minHeight: 520, background: P.paper, display: "flex", alignItems: "center", justifyContent: "center", color: P.inkFaint, fontSize: 13, letterSpacing: "0.1em", textTransform: "uppercase" }}>Opening ledger…</div>;
+
+  // no spaces yet → show pending invites to join, and/or create your first space
+  if (data.spaces.length === 0)
+    return <FirstSpace invites={invites} onApprove={actions.approveInvite} onDecline={actions.declineInvite} onCreate={actions.createSpaceAction} S={S} />;
 
   const isAll = data.activeSpace === "all";
   const realSpaces = data.spaces;
@@ -170,6 +174,8 @@ export default function App() {
   return (
     <div style={{ ...sans, background: P.paper, minHeight: 700, display: "flex", justifyContent: "center", color: P.ink }}>
       <div style={{ width: "100%", maxWidth: 430, position: "relative", paddingBottom: 96 }}>
+
+        {invites && invites.length > 0 && <InviteBanner invites={invites} onApprove={actions.approveInvite} onDecline={actions.declineInvite} S={S} />}
 
         {/* top bar */}
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "18px 16px 10px" }}>
@@ -743,6 +749,69 @@ function ImportSheet({ onClose, onImport, space, S }) {
         </>
       )}
     </Sheet>
+  );
+}
+
+// ── First-space / invite-to-join screen (shown when you have no spaces) ──
+function FirstSpace({ invites, onApprove, onDecline, onCreate, S }) {
+  const { serif, sans, eyebrow } = S;
+  const [name, setName] = useState("");
+  const [type, setType] = useState("family");
+  const types = [
+    { id: "family", title: "Family", desc: "One shared pool. Everyone adds to the same ledger, no debts." },
+    { id: "roommates", title: "Roommates", desc: "Track who paid and settle up, Splitwise-style." },
+  ];
+  return (
+    <div style={{ ...sans, background: P.paper, minHeight: 700, display: "flex", justifyContent: "center", color: P.ink, padding: "40px 18px" }}>
+      <div style={{ width: "100%", maxWidth: 400 }}>
+        <div style={{ ...serif, fontSize: 28, fontWeight: 500, marginBottom: 4 }}>Quiet Ledger</div>
+
+        {invites && invites.length > 0 && (
+          <div style={{ margin: "22px 0 30px" }}>
+            <div style={{ ...eyebrow, marginBottom: 12 }}>You're invited</div>
+            {invites.map((i) => (
+              <div key={i.id} style={{ background: P.accentSoft, border: `1px solid ${P.hairline}`, borderRadius: 16, padding: 16, marginBottom: 10 }}>
+                <div style={{ ...sans, fontSize: 14.5, fontWeight: 600, color: P.ink }}>Join <b>{i.space_name}</b></div>
+                <div style={{ ...sans, fontSize: 12, color: P.inkSoft, margin: "4px 0 14px" }}>You've been invited as {i.role}.</div>
+                <div style={{ display: "flex", gap: 8 }}>
+                  <button onClick={() => onApprove(i.id)} style={{ ...sans, flex: 1, fontSize: 13.5, fontWeight: 600, color: "#fff", background: P.accent, border: "none", borderRadius: 12, padding: "11px 0", cursor: "pointer" }}>Join</button>
+                  <button onClick={() => onDecline(i.id)} style={{ ...sans, fontSize: 13.5, color: P.inkSoft, background: "none", border: `1px solid ${P.hairline}`, borderRadius: 12, padding: "11px 18px", cursor: "pointer" }}>Decline</button>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+
+        <div style={{ ...eyebrow, margin: "22px 0 6px" }}>{invites && invites.length ? "Or create your own" : "Create your first space"}</div>
+        <div style={{ ...sans, fontSize: 13, color: P.inkSoft, marginBottom: 16, lineHeight: 1.5 }}>A space is a shared pot with its own budget and members — like a household, or just you.</div>
+        <input autoFocus value={name} onChange={(e) => setName(e.target.value)} placeholder="Name it (e.g. Household)" style={{ ...serif, fontSize: 22, fontWeight: 500, border: "none", borderBottom: `1px solid ${P.hairline}`, background: "none", width: "100%", color: P.ink, padding: "10px 0", margin: "0 0 20px", boxSizing: "border-box" }} />
+        <div style={{ display: "flex", flexDirection: "column", gap: 10, marginBottom: 22 }}>
+          {types.map((t) => (
+            <button key={t.id} onClick={() => setType(t.id)} style={{ textAlign: "left", cursor: "pointer", padding: "14px 15px", borderRadius: 16, border: `1.5px solid ${type === t.id ? P.accent : P.hairline}`, background: type === t.id ? P.accentSoft : P.surface }}>
+              <div style={{ ...sans, fontSize: 14, fontWeight: 600, color: type === t.id ? P.accent : P.ink }}>{t.title}</div>
+              <div style={{ ...sans, fontSize: 12, color: P.inkSoft, marginTop: 3, lineHeight: 1.5 }}>{t.desc}</div>
+            </button>
+          ))}
+        </div>
+        <button onClick={() => name.trim() && onCreate(name.trim(), type)} disabled={!name.trim()} style={{ ...sans, width: "100%", padding: 15, borderRadius: 14, border: "none", fontSize: 15, fontWeight: 600, cursor: name.trim() ? "pointer" : "not-allowed", background: name.trim() ? P.accent : P.hairline, color: name.trim() ? "#fff" : P.inkFaint }}>Create space</button>
+      </div>
+    </div>
+  );
+}
+
+// ── Invite banner (shown at top when you already have spaces) ──
+function InviteBanner({ invites, onApprove, onDecline, S }) {
+  const { sans } = S;
+  return (
+    <div style={{ padding: "12px 16px 0" }}>
+      {invites.map((i) => (
+        <div key={i.id} style={{ background: P.accentSoft, border: `1px solid ${P.accent}`, borderRadius: 14, padding: "12px 14px", marginBottom: 8, display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+          <div style={{ flex: 1, minWidth: 140, ...sans, fontSize: 13, color: P.ink }}>Invited to <b>{i.space_name}</b></div>
+          <button onClick={() => onApprove(i.id)} style={{ ...sans, fontSize: 12.5, fontWeight: 600, color: "#fff", background: P.accent, border: "none", borderRadius: 10, padding: "8px 16px", cursor: "pointer" }}>Join</button>
+          <button onClick={() => onDecline(i.id)} style={{ ...sans, fontSize: 12.5, color: P.inkSoft, background: "none", border: `1px solid ${P.hairline}`, borderRadius: 10, padding: "8px 12px", cursor: "pointer" }}>Decline</button>
+        </div>
+      ))}
+    </div>
   );
 }
 

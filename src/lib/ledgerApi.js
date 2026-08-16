@@ -1,14 +1,13 @@
-// Data layer. Swap the app's window.storage calls for these.
-// Every call is scoped by RLS on the server, so you never pass a
-// user id — the database knows who you are from the session.
+// Data layer. Every call is scoped by RLS on the server, so you never
+// pass a user id — the database knows who you are from the session.
 import { supabase } from "./supabaseClient";
 
-// ── auth ───────────────────────────────────────────────────────
-export const signInWithEmail = (email) =>
-  supabase.auth.signInWithOtp({ email, options: { emailRedirectTo: window.location.origin } });
+// ── auth (email OTP code) ──────────────────────────────────────
+export const sendEmailCode = (email) =>
+  supabase.auth.signInWithOtp({ email });
 
-export const signInWithGoogle = () =>
-  supabase.auth.signInWithOAuth({ provider: "google", options: { redirectTo: window.location.origin } });
+export const verifyEmailCode = (email, token) =>
+  supabase.auth.verifyOtp({ email, token, type: "email" });
 
 export const signOut = () => supabase.auth.signOut();
 export const getSession = () => supabase.auth.getSession();
@@ -21,8 +20,9 @@ export async function getSpaces() {
   return data;
 }
 export async function createSpace(name, type) {
-  const { data, error } = await supabase.from("spaces").insert({ name, type }).select().single();
-  if (error) throw error;                 // trigger auto-adds you as owner
+  // SECURITY DEFINER RPC — creates the space and your owner membership atomically
+  const { data, error } = await supabase.rpc("create_space", { p_name: name, p_type: type });
+  if (error) throw error;
   return data;
 }
 export async function updatePlan(spaceId, { income, savings_pct }) {
@@ -69,19 +69,25 @@ export const setBudget = (spaceId, category, amount) =>
 export const clearBudget = (spaceId, category) =>
   supabase.from("space_budgets").delete().eq("space_id", spaceId).eq("category", category);
 
-// ── sharing ────────────────────────────────────────────────────
+// ── sharing (approval flow) ────────────────────────────────────
 export async function inviteToSpace(spaceId, email, role = "member") {
-  const { error } = await supabase.from("space_invites").insert({ space_id: spaceId, email, role });
+  const { error } = await supabase.from("space_invites").insert({ space_id: spaceId, email: email.toLowerCase(), role });
   if (error) throw error;
 }
-export async function myPendingInvites() {
-  const { data } = await supabase.from("space_invites").select("id, space_id, role").eq("accepted", false);
+// invites addressed to me, with the space's name (via SECURITY DEFINER fn)
+export async function myInvites() {
+  const { data, error } = await supabase.rpc("my_invites");
+  if (error) throw error;
   return data ?? [];
 }
-export async function acceptInvite(inviteId) {
+export async function approveInvite(inviteId) {
   const { data, error } = await supabase.rpc("accept_invite", { p_invite: inviteId });
   if (error) throw error;
-  return data;                            // returns the space id
+  return data; // space id
+}
+export async function declineInvite(inviteId) {
+  const { error } = await supabase.rpc("decline_invite", { p_invite: inviteId });
+  if (error) throw error;
 }
 export async function getMembers(spaceId) {
   const { data } = await supabase.from("space_members")
@@ -90,8 +96,6 @@ export async function getMembers(spaceId) {
 }
 
 // ── live updates ───────────────────────────────────────────────
-// Call this when a space is open; runs cb whenever anyone in the
-// space adds/edits/deletes, so all phones stay in sync.
 export function subscribeToSpace(spaceId, cb) {
   const ch = supabase.channel(`space:${spaceId}`)
     .on("postgres_changes", { event: "*", schema: "public", table: "transactions", filter: `space_id=eq.${spaceId}` }, cb)

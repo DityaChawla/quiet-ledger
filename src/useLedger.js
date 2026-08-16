@@ -1,19 +1,23 @@
-import { useEffect, useState, useRef } from "react";
+import { useEffect, useState, useRef, useCallback } from "react";
 import {
   getSpaces, createSpace, updatePlan,
   getTransactions, addTransaction, importTransactions, deleteTransaction,
   getFixed, upsertFixed, deleteFixed,
   getBudgets, setBudget, clearBudget,
-  getMembers, inviteToSpace, myPendingInvites, acceptInvite,
+  getMembers, inviteToSpace,
+  myInvites, approveInvite, declineInvite,
   subscribeToSpace,
 } from "./lib/ledgerApi";
 
-// Loads all of the user's spaces into the exact shape the UI expects,
-// then persists every change to Supabase and refetches so all phones
-// stay in sync. This is the only file that knows about the database.
+// Loads the user's spaces into the shape the UI expects, persists every
+// change to Supabase, keeps things fresh, and manages pending invites.
+// No auto-creation of spaces: a new user with none sees the create screen,
+// an invited user sees a Join prompt.
 export function useLedger() {
   const [ready, setReady] = useState(false);
   const [data, setData] = useState(null);
+  const [invites, setInvites] = useState([]);
+  const loadedOnce = useRef(false);   // React StrictMode double-invokes effects; run once
   const curRef = useRef((typeof localStorage !== "undefined" && localStorage.getItem("ql-cur")) || "\u20B9");
 
   const loadSpace = async (row) => {
@@ -30,37 +34,56 @@ export function useLedger() {
     };
   };
 
-  const loadAll = async () => {
-    // accept any pending invites first so shared spaces show up
-    try { const inv = await myPendingInvites(); for (const i of inv) await acceptInvite(i.id); } catch {}
-    let spaces = await getSpaces();
-    if (!spaces.length) {                       // first sign-in: create starters
-      await createSpace("Household", "family");
-      await createSpace("Personal", "family");
-      spaces = await getSpaces();
-    }
+  const refreshInvites = useCallback(async () => {
+    try { setInvites(await myInvites()); } catch { setInvites([]); }
+  }, []);
+
+  const loadAll = useCallback(async () => {
+    const spaces = await getSpaces();               // no auto-create
     const built = await Promise.all(spaces.map(loadSpace));
-    setData((d) => ({ activeSpace: (d && d.activeSpace) || built[0].id, cur: curRef.current, spaces: built }));
+    setData((d) => ({
+      activeSpace: (d && d.activeSpace && built.some((b) => b.id === d.activeSpace)) ? d.activeSpace : (built[0] && built[0].id) || null,
+      cur: curRef.current,
+      spaces: built,
+    }));
+    await refreshInvites();
     setReady(true);
-  };
+  }, [refreshInvites]);
 
-  useEffect(() => { loadAll(); }, []);
+  useEffect(() => {
+    if (loadedOnce.current) return;
+    loadedOnce.current = true;
+    loadAll();
+  }, [loadAll]);
 
-  const refetchSpace = async (sid) => {
+  const refetchSpace = useCallback(async (sid) => {
     const spaces = await getSpaces();
     const row = spaces.find((s) => s.id === sid);
     if (!row) return loadAll();
     const built = await loadSpace(row);
     setData((d) => (d ? { ...d, spaces: d.spaces.map((s) => (s.id === sid ? built : s)) } : d));
-  };
+  }, [loadAll]);
 
-  // live updates: when the open space changes anywhere, refetch it
   const activeSpace = data && data.activeSpace;
+
+  // live sync while a space is open
   useEffect(() => {
     if (!activeSpace || activeSpace === "all") return;
     const unsub = subscribeToSpace(activeSpace, () => refetchSpace(activeSpace));
     return unsub;
-  }, [activeSpace]);
+  }, [activeSpace, refetchSpace]);
+
+  // refetch open space + invites whenever the app/tab regains focus
+  useEffect(() => {
+    const onFocus = () => {
+      if (activeSpace && activeSpace !== "all") refetchSpace(activeSpace);
+      refreshInvites();
+    };
+    window.addEventListener("focus", onFocus);
+    const onVis = () => { if (!document.hidden) onFocus(); };
+    document.addEventListener("visibilitychange", onVis);
+    return () => { window.removeEventListener("focus", onFocus); document.removeEventListener("visibilitychange", onVis); };
+  }, [activeSpace, refetchSpace, refreshInvites]);
 
   const actions = {
     setActive: (id) => setData((d) => ({ ...d, activeSpace: id })),
@@ -68,8 +91,10 @@ export function useLedger() {
     addTransaction: async (sid, e) => { await addTransaction(sid, e); await refetchSpace(sid); },
     importMany: async (sid, rows) => { await importTransactions(sid, rows); await refetchSpace(sid); },
     removeTransaction: async (sid, id) => { await deleteTransaction(id); await refetchSpace(sid); },
-    createSpaceAction: async (name, type) => { const s = await createSpace(name, type); await loadAll(); setData((d) => ({ ...d, activeSpace: s.id })); },
+    createSpaceAction: async (name, type) => { const s = await createSpace(name, type); await loadAll(); setData((d) => ({ ...d, activeSpace: s && s.id ? s.id : (d && d.activeSpace) })); },
     invite: async (sid, email) => { await inviteToSpace(sid, email); },
+    approveInvite: async (id) => { const sid = await approveInvite(id); await loadAll(); if (sid) setData((d) => ({ ...d, activeSpace: sid })); },
+    declineInvite: async (id) => { await declineInvite(id); await refreshInvites(); },
     persistPatch: async (sid, patch, prev) => {
       if ("income" in patch || "savingsPct" in patch)
         await updatePlan(sid, { income: patch.income != null ? patch.income : prev.income, savings_pct: patch.savingsPct != null ? patch.savingsPct : prev.savingsPct });
@@ -88,5 +113,5 @@ export function useLedger() {
     },
   };
 
-  return { ready, data, setData, actions };
+  return { ready, data, setData, invites, actions };
 }
